@@ -11,7 +11,7 @@ import (
 	"github.com/lzecca78/gin-oauth2/github"
 )
 
-var redirectURL, credFile string
+var redirectURL, credFile, authenticationRedirectURL string
 
 func init() {
 	bin := path.Base(os.Args[0])
@@ -22,9 +22,11 @@ Usage of %s
 `, bin)
 		flag.PrintDefaults()
 	}
-	flag.StringVar(&redirectURL, "redirect", "http://127.0.0.1:8081/auth/", "URL to be redirected to after authorization.")
+	flag.StringVar(&redirectURL, "redirect", "http://127.0.0.1:8081/auth/", "URL to be redirected to after the first authentication.")
 	flag.StringVar(&credFile, "cred-file", "./example/github/test-clientid.github.json", "Credential JSON file")
+	flag.StringVar(&authenticationRedirectURL, "authentication-redirect", "http://127.0.0.1:8081/", "URL to be redirect after checking the user is correctly authorized")
 }
+
 func main() {
 	flag.Parse()
 
@@ -36,16 +38,17 @@ func main() {
 	sessionName := "goquestsession"
 	router := gin.Default()
 	// init settings for github auth
-	github.Setup(redirectURL, credFile, scopes, secret)
+	github.Setup(redirectURL, credFile, scopes, secret, authenticationRedirectURL)
 	router.Use(github.Session(sessionName))
 
 	router.GET("/login", github.LoginHandler)
+	router.GET("/auth", github.Auth())
 
 	// protected url group
-	private := router.Group("/auth")
-	private.Use(github.Auth())
-	private.GET("/", UserInfoHandler)
-	private.GET("/api", func(ctx *gin.Context) {
+	private := router.Group("/")
+	private.Use(github.CheckAuthenticatedUser())
+	private.GET("/info", UserInfoHandler)
+	private.GET("/", func(ctx *gin.Context) {
 		ctx.JSON(200, gin.H{"message": "Hello from private for groups"})
 	})
 
