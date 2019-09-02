@@ -26,10 +26,11 @@ type Credentials struct {
 }
 
 var (
-	conf  *oauth2.Config
-	cred  Credentials
-	state string
-	store sessions.CookieStore
+	conf                      *oauth2.Config
+	cred                      Credentials
+	state                     string
+	store                     sessions.CookieStore
+	authenticationRedirectURL string
 )
 
 func randToken() string {
@@ -38,7 +39,7 @@ func randToken() string {
 	return base64.StdEncoding.EncodeToString(b)
 }
 
-func Setup(redirectURL, credFile string, scopes []string, secret []byte) {
+func Setup(redirectURL, credFile string, scopes []string, secret []byte, authenticationRedirectURL string) {
 	store = sessions.NewCookieStore(secret)
 	var c Credentials
 	file, err := ioutil.ReadFile(credFile)
@@ -53,6 +54,7 @@ func Setup(redirectURL, credFile string, scopes []string, secret []byte) {
 		Scopes:       scopes,
 		Endpoint:     oauth2gh.Endpoint,
 	}
+	authenticationRedirectURL = authenticationRedirectURL
 }
 
 func Session(name string) gin.HandlerFunc {
@@ -64,11 +66,29 @@ func LoginHandler(ctx *gin.Context) {
 	session := sessions.Default(ctx)
 	session.Set("state", state)
 	session.Save()
-	ctx.Writer.Write([]byte("<html><title>Golang Github</title> <body> <a href='" + GetLoginURL(state) + "'><button>Login with GitHub!</button> </a> </body></html>"))
+
+	response := struct {
+		GithubURI string `json:"github_uri"`
+	}{GetLoginURL(state)}
+
+	strURL, err := json.Marshal(response)
+	if err != nil {
+		ctx.AbortWithError(http.StatusInternalServerError, fmt.Errorf("Error :%v", err))
+		return
+	}
+	ctx.Writer.Write(strURL)
 }
 
 func GetLoginURL(state string) string {
 	return conf.AuthCodeURL(state)
+}
+
+func ExchangeToken(ctx *gin.Context) *oauth2.Token {
+	tok, err := conf.Exchange(oauth2.NoContext, ctx.Query("code"))
+	if err != nil {
+		ctx.AbortWithError(http.StatusBadRequest, err)
+	}
+	return tok
 }
 
 func Auth() gin.HandlerFunc {
@@ -86,13 +106,25 @@ func Auth() gin.HandlerFunc {
 			ctx.AbortWithError(http.StatusBadRequest, err)
 			return
 		}
-		client := github.NewClient(conf.Client(oauth2.NoContext, tok))
+		session.Set("access_token", tok)
+		session.Save()
+		ctx.Redirect(http.StatusMovedPermanently, authenticationRedirectURL)
+	}
+}
+
+func CheckAuthenticatedUser() gin.HandlerFunc {
+	return func(ctx *gin.Context) {
+		session := sessions.Default(ctx)
+		accessToken, ok := session.Get("access_token").(*oauth2.Token)
+		if !ok {
+			ctx.AbortWithError(http.StatusUnauthorized, fmt.Errorf("missing accessToken"))
+		}
+		client := github.NewClient(conf.Client(oauth2.NoContext, accessToken))
 		user, _, err := client.Users.Get(oauth2.NoContext, "")
 		if err != nil {
 			ctx.AbortWithError(http.StatusBadRequest, err)
 			return
 		}
-		// save userinfo, which could be used in Handlers
 		ctx.Set("user", user)
 	}
 }
